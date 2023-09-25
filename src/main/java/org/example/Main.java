@@ -41,10 +41,11 @@ public class Main {
         String fileLanguage;
 
         AutoDetectParser parser = new AutoDetectParser();
+
         LinkContentHandler linkHandler = new LinkContentHandler();
         BodyContentHandler textHandler = new BodyContentHandler(-1);
-        TeeContentHandler teeHandler = new TeeContentHandler(linkHandler,
-                textHandler);
+        TeeContentHandler teeHandler = new TeeContentHandler(linkHandler, textHandler);
+
         Metadata metadata = new Metadata();
         ParseContext parseContext = new ParseContext();
 
@@ -59,7 +60,7 @@ public class Main {
         fileType = fileTypeAndCharset[0];
 
         //Haciendo esto me ahorro tener que usar otro get de metadata y también
-        // el crear el CharsetDetector, con todo lo que esto conlleva
+        // el crear el CharsetDetector, con lo que esto conlleva
         int i = 0;
         for (String ignored : fileTypeAndCharset) {
             i++;
