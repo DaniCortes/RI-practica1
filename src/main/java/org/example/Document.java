@@ -20,185 +20,217 @@ import java.io.*;
 import java.util.*;
 
 public class Document {
-    private final File file;
-    private String type;
-    private String language;
-    private String encoding;
-    private final Map<String, Integer> occurrences;
-    private final ArrayList<Link> links;
-    private final BodyContentHandler textHandler;
 
-    private final LinkContentHandler linkHandler;
-    private final Metadata metadata;
+  private final File file;
+  private String type;
+  private String language;
+  private String encoding;
+  private final Map<String, Integer> occurrences;
+  private List<Map.Entry<String, Integer>> sortedOccurrences;
+  private final ArrayList<Link> links;
+  private final BodyContentHandler textHandler;
 
-    public Document(File file) throws TikaException, IOException, SAXException {
-        this.file = file;
+  private final LinkContentHandler linkHandler;
+  private final Metadata metadata;
 
-        AutoDetectParser parser = new AutoDetectParser();
-        occurrences = new HashMap<>();
-        linkHandler = new LinkContentHandler();
-        textHandler = new BodyContentHandler(-1);
-        TeeContentHandler teeHandler = new TeeContentHandler(linkHandler, textHandler);
-        metadata = new Metadata();
-        ParseContext parseContext = new ParseContext();
-        links = new ArrayList<>(linkHandler.getLinks());
+  public Document(File file) throws TikaException, IOException, SAXException {
+    this.file = file;
 
-        //Esto lo he hecho porque necesito que el FileInputStream tenga soporte
-        // de mark/reset ya que si el InputStream que le paso al charsetDetector
-        // no tiene este soporte, da error.
-        InputStream is = new BufferedInputStream(new FileInputStream(file));
-        parser.parse(is, teeHandler, metadata, parseContext);
-        setTypeAndCharset(is);
-        retrieveLanguage();
-        retrieveOccurrences();
-        writeOccurrencesInFile();
-        writeLinksInFile();
+    AutoDetectParser parser = new AutoDetectParser();
+    occurrences = new HashMap<>();
+    linkHandler = new LinkContentHandler();
+    textHandler = new BodyContentHandler(-1);
+    TeeContentHandler teeHandler = new TeeContentHandler(linkHandler, textHandler);
+    metadata = new Metadata();
+    ParseContext parseContext = new ParseContext();
+    links = new ArrayList<>(linkHandler.getLinks());
+
+    //Esto lo he hecho porque necesito que el FileInputStream tenga soporte
+    // de mark/reset ya que si el InputStream que le paso al charsetDetector
+    // no tiene este soporte, da error.
+    InputStream is = new BufferedInputStream(new FileInputStream(file));
+    parser.parse(is, teeHandler, metadata, parseContext);
+    setTypeAndCharset(is);
+    retrieveLanguage();
+    retrieveOccurrences();
+    writeOccurrencesInFile();
+    writeRanksInFile();
+    writeLinksInFile();
+  }
+
+  private void setTypeAndCharset(InputStream is) throws IOException {
+    String[] typeAndCharset = metadata.get("Content-Type").split(";");
+
+    type = typeAndCharset[0];
+
+    //Haciendo esto me ahorro tener que usar otro get de metadata y también
+    // el crear el CharsetDetector, con lo que esto conlleva
+
+    if (typeAndCharset.length == 2) {
+      encoding = typeAndCharset[1];
+      encoding = encoding.split("=")[1];
     }
 
-    private void setTypeAndCharset(InputStream is) throws IOException {
-        String[] typeAndCharset = metadata.get("Content-Type").split(";");
+    if (encoding == null) {
+      encoding = metadata.get("Content-Encoding");
+      if (encoding == null) {
+        CharsetDetector charsetDetector = new CharsetDetector();
+        charsetDetector.setText(is);
+        CharsetMatch charsetMatch = charsetDetector.detect();
+        encoding = charsetMatch.getName();
+      }
+    }
+  }
 
-        type = typeAndCharset[0];
+  private String identifyLanguage() {
+    LanguageDetector identifier = new OptimaizeLangDetector().loadModels();
+    LanguageResult language = identifier.detect(textHandler.toString());
+    return language.getLanguage();
+  }
 
+  private void retrieveOccurrences() {
+    String[] everyWord = textHandler.toString().split("\\s+");
+    for (String word : everyWord) {
+      word = trim(word);
+      if (word.trim().isEmpty()) {
+        continue;
+      }
+      if (!occurrences.containsKey(word)) {
+        occurrences.put(word, 1);
+        continue;
+      }
+      occurrences.replace(word, occurrences.get(word) + 1);
+    }
+  }
 
-        //Haciendo esto me ahorro tener que usar otro get de metadata y también
-        // el crear el CharsetDetector, con lo que esto conlleva
+  private String trim(String word) {
+    String regex = ", | ; | : | \\. | \" | ' | < | > | \\( | \\) | \\[ | ] | ¿ | \\? | \\* |"
+        + " \\^ | \\+ | = | \\$ | % | € | / | \\\\ | - | \\{ | } | ! | ¡ | \\| | ~ | @ | ; |"
+        + " « | » | — | “ | ” | • | ’ | ‘ | ™";
+    regex = regex.replaceAll("\\s", "");
 
-        if (typeAndCharset.length == 2) {
-            encoding = typeAndCharset[1];
-            encoding = encoding.split("=")[1];
+    word = word.replaceAll(regex, "").trim().toLowerCase();
+    return word;
+  }
+
+  private void retrieveLanguage() {
+    language = metadata.get("dc.language");
+
+    if (language == null) {
+      language = metadata.get("Content-Language");
+      if (language == null) {
+        language = identifyLanguage();
+      }
+    }
+  }
+
+  private String getFilenameWithoutExtension() {
+    return FilenameUtils.removeExtension(file.getName());
+  }
+
+  private String createFile(String folder) throws IOException {
+    String filename = getFilenameWithoutExtension() + "-" + folder;
+    String filePath = "src/main/resources/" + folder + "/" + filename + ".dat";
+    File file = new File(filePath);
+
+    if (file.createNewFile()) {
+      System.out.println("File " + filename + " created.");
+    } else {
+      System.out.println("File " + filename + " already exists. "
+          + "Proceeding to delete its contents.");
+      new FileWriter(filePath, false).close();
+      System.out.println("File contents deleted.");
+    }
+
+    return filePath;
+  }
+
+  private void writeOccurrencesInFile() throws IOException {
+    sortedOccurrences = new ArrayList<>(occurrences.entrySet());
+    sortedOccurrences.sort(Map.Entry.comparingByValue(Comparator.reverseOrder()));
+    String filePath = createFile("occurrences");
+    int limit = 20;
+
+    try (FileWriter writer = new FileWriter(filePath)) {
+      for (Map.Entry<String, Integer> occurrence : sortedOccurrences) {
+        if (getName().equals("the-snow-queen.txt")) {
+          limit = 5;
+        } else if (getName().equals("war-of-the-worlds.htm")) {
+          limit = 15;
         }
+        if (occurrence.getValue() <= limit) {
+          break;
 
-        if (encoding == null) {
-            encoding = metadata.get("Content-Encoding");
-            if (encoding == null) {
-                CharsetDetector charsetDetector = new CharsetDetector();
-                charsetDetector.setText(is);
-                CharsetMatch charsetMatch = charsetDetector.detect();
-                encoding = charsetMatch.getName();
-            }
         }
+        writer.write(occurrence.getKey() + " " + occurrence.getValue()
+            + String.format("%n"));
+      }
+      System.out.println("Occurrences saved." + String.format("%n"));
+    } catch (IOException e) {
+      System.out.println("Error: " + e.getMessage());
     }
+  }
 
-    private String identifyLanguage() {
-        LanguageDetector identifier = new OptimaizeLangDetector().loadModels();
-        LanguageResult language = identifier.detect(textHandler.toString());
-        return language.getLanguage();
-    }
+  private void writeRanksInFile() throws IOException {
+    String filePath = createFile("ranks");
 
-    private void retrieveOccurrences() {
-        String[] everyWord = textHandler.toString().split("\\s+");
-        for (String word : everyWord) {
-            word = trim(word);
-            if (word.trim().isEmpty()) {
-                continue;
-            }
-            if (!occurrences.containsKey(word)) {
-                occurrences.put(word, 1);
-                continue;
-            }
-            occurrences.replace(word, occurrences.get(word) + 1);
+    try (FileWriter writer = new FileWriter(filePath)) {
+      int i = 0;
+      for (Map.Entry<String, Integer> occurrence : sortedOccurrences) {
+        if (occurrence.getValue() <= 5) {
+          break;
         }
+        writer.write(i++ + " " + occurrence.getValue()
+            + String.format("%n"));
+      }
+      System.out.println("Ranks saved." + String.format("%n"));
+    } catch (IOException e) {
+      System.out.println("Error: " + e.getMessage());
     }
+  }
 
-    private String trim(String word) {
-        String regex = ", | ; | : | \\. | \" | ' | < | > | \\( | \\) | \\[ | ] | ¿ | \\? | \\* | \\^ | \\+ | = |" +
-                " \\$ | % | € | / | \\\\ | - | \\{ | } | ! | ¡ | \\| | ~ | @ | ; | « | » | — | “ | ”";
-        regex = regex.replaceAll("\\s", "");
+  private void writeLinksInFile() throws IOException {
+    String filePath = createFile("links");
 
-        word = word.replaceAll(regex, "").trim().toLowerCase();
-        return word;
-    }
-
-    private void retrieveLanguage() {
-        language = metadata.get("dc.language");
-
-        if (language == null) {
-            language = metadata.get("Content-Language");
-            if (language == null) {
-                language = identifyLanguage();
-            }
+    try (FileWriter writer = new FileWriter(filePath)) {
+      for (Link link : linkHandler.getLinks()) {
+        if (link.getText().isEmpty()) {
+          continue;
         }
+        writer.write(link.getText() + String.format("%n"));
+      }
+      System.out.println("Links saved." + String.format("%n"));
+    } catch (IOException e) {
+      System.out.println("Error: " + e.getMessage());
     }
+  }
 
-    private String getFilenameWithoutExtension() {
-        return FilenameUtils.removeExtension(file.getName());
-    }
+  public String getName() {
+    return file.getName();
+  }
 
-    private String createFile(String folder) throws IOException {
-        String filename = getFilenameWithoutExtension() + "-" + folder;
-        String filePath = "src/main/resources/" + folder + "/" + filename + ".txt";
-        File file = new File(filePath);
+  public String getType() {
+    return type;
+  }
 
-        if (file.createNewFile()) {
-            System.out.println("File " + filename + " created.");
-        } else {
-            System.out.println("File " + filename + " already exists. " +
-                    "Proceeding to delete its contents.");
-            new FileWriter(filePath, false).close();
-            System.out.println("File contents deleted.");
-        }
+  public String getLanguage() {
+    return language;
+  }
 
-        return filePath;
-    }
+  public String getEncoding() {
+    return encoding;
+  }
 
-    private void writeOccurrencesInFile() throws IOException {
-        List<Map.Entry<String, Integer>> list = new ArrayList<>(occurrences.entrySet());
-        list.sort(Map.Entry.comparingByValue(Comparator.reverseOrder()));
-        String filePath = createFile("occurrences");
+  public String toString() {
+    return "File name: " + getName()
+        + "\nFile type: " + getType()
+        + "\nFile language: " + getLanguage()
+        + "\nFile encoding: " + getEncoding()
+        + "\n";
+  }
 
-        try (FileWriter writer = new FileWriter(filePath)) {
-            for (Map.Entry<String, Integer> occurrence : list) {
-                writer.write(occurrence.getKey() + ": " + occurrence.getValue() + String.format("%n"));
-            }
-            System.out.println("File completed." + String.format("%n"));
-        } catch (IOException e) {
-            System.out.println("Error: " + e.getMessage());
-        }
-    }
-
-    private void writeLinksInFile() throws IOException {
-        String filePath = createFile("links");
-
-        try (FileWriter writer = new FileWriter(filePath)) {
-            for (Link link : linkHandler.getLinks()) {
-                if (link.getText().isEmpty()) {
-                    continue;
-                }
-                writer.write(link.getText() + String.format("%n"));
-            }
-            System.out.println("File completed." + String.format("%n"));
-        } catch (IOException e) {
-            System.out.println("Error: " + e.getMessage());
-        }
-    }
-
-    public String getName() {
-        return file.getName();
-    }
-
-    public String getType() {
-        return type;
-    }
-
-    public String getLanguage() {
-        return language;
-    }
-
-    public String getEncoding() {
-        return encoding;
-    }
-
-    public String toString() {
-        return "File name: " + getName() +
-                "\nFile type: " + getType() +
-                "\nFile language: " + getLanguage() +
-                "\nFile encoding: " + getEncoding() +
-                "\n";
-    }
-
-    public ArrayList<Link> getLinks() {
-        return links;
-    }
+  public ArrayList<Link> getLinks() {
+    return links;
+  }
 
 }
